@@ -1,0 +1,278 @@
+---
+title: "SCPaper_DDWMA_Simulation"
+author: "Erfanul Hoque"
+date: "February 19, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Machine learning approach
+
+To perform the optimization we will need
+
+- Generate demand process from AR(1) model
+
+- Calculate the lag demands for the time period
+
+- Assign random weights to the lag demands and then use those to build DDWMA demand forecast
+
+
+```{r, include=FALSE, echo=FALSE}
+# required packages
+require(timeSeries)
+require(tibble)
+require(dplyr) # to get lag values
+library(TTR) # tp use "SMA" function
+library(zoo) # to use "rollapply" function
+library(fGarch) # for student t distribution
+```
+
+
+```{r}
+# Call auxillary functions.
+source("aux_functions.R")
+
+```
+
+## Simulation Experiments
+
+```{r}
+###############################################################
+# M1:  Generate data from AR(1) with normal error
+###############################################################
+# n=1000
+set.seed(2021)
+D.t <- AR_sim(t = 1000, mean = 60, ar.coef=0.80, order = c(1, 0, 0), sd = 8, error = "norm") # AR(1)
+## Check variance for normal
+# sd(D.t)
+# sqrt(1^2/(1-0.8^2))
+
+# n=2000
+set.seed(2021)
+D.t <- AR_sim(t = 2000, mean = 60, ar.coef=0.80, order = c(1, 0, 0), sd = 8, error = "norm") # AR(1)
+
+# n=3000
+set.seed(2021)
+D.t <- AR_sim(t = 3000, mean = 60, ar.coef=0.80, order = c(1, 0, 0), sd = 8, error = "norm") # AR(1)
+
+
+res <- train_test(D.t)
+#res
+
+xtable::xtable(res[[1]], digits=2)
+
+xtable::xtable(res[[2]], digits=2)
+
+###############################################################
+# M2:  Generate data from AR(1) with t(3) error
+###############################################################
+# n=500
+set.seed(2021)
+D.t <- AR_sim(t=5000, mean = 60, ar.coef = 0.80, order = c(1, 0, 0), error = "t", df=3) # AR(1)
+#hist(D.t)
+#head(D.t)
+## Check variance for normal
+# sd(D.t)
+# sqrt(1^2/(1-0.8^2))
+
+# n=1000
+set.seed(2021)
+D.t <- AR_sim(t=2000, mean = 60, ar.coef = 0.80, order = c(1, 0, 0), error = "t", df=3) # AR(1)
+
+# n=2000
+set.seed(2021)
+D.t <- AR_sim(t=3000, mean = 60, ar.coef = 0.80, order = c(1, 0, 0), error = "t", df=3) # AR(1)
+
+
+
+
+res <- train_test(D.t)
+res[[1]]
+
+
+xtable::xtable(res[[1]], digits=2)
+
+xtable::xtable(res[[2]], digits=2)
+
+
+
+###############################################################
+# M1:  Generate data from AR(1) with normal error
+###############################################################
+# n=500
+set.seed(2021)
+D.t <- AR_sim(t = 1000, mean = 60, ar.coef=0.80, order = c(1, 0, 0), sd = 8, error = "norm") # AR(1)
+
+###############################################################
+# M2:  Generate data from AR(1) with t(3) error
+###############################################################
+# n=500
+set.seed(2021)
+D.t1 <- AR_sim(t=1000, mean = 60, ar.coef = 0.80, order = c(1, 0, 0), error = "t", df=3) # AR(1)
+
+simdata <- data.frame(D.t, D.t1)
+
+# Implementation 
+#########################################################
+# SMA
+#PT <- sma_methodTest(data = simdata[,1], L =5, method="sma", dist = "norm")
+#DDWMA
+#PT_ddsma <- sma_methodTest(simdata[,1], L =5, method="DDsma", dist = "norm")
+##########################################################
+
+
+# Data 1
+Qt1 <- Qt_percentileS(simdata[,1], alpha = 0.1, dist = "norm")
+Qt2 <- Qt_percentileS(simdata[,1], alpha = 0.05,dist = "norm")
+Qt3 <- Qt_percentileS(simdata[,1], alpha = 0.02,dist = "norm")
+Qt4 <- Qt_percentileS(simdata[,1], alpha = 0.005,dist = "norm")
+
+Qt.res <- c(Qt1, Qt2, Qt3, Qt4)
+Qt.res <- data.frame(t(Qt.res))
+
+# Data 2
+Qt1 <- Qt_percentileS(simdata[,2], alpha = 0.01, dist = "t")
+Qt2 <- Qt_percentileS(simdata[,2], alpha = 0.05, dist = "t")
+Qt3 <- Qt_percentileS(simdata[,2], alpha = 0.02, dist = "t")
+Qt4 <- Qt_percentileS(simdata[,2], alpha = 0.005, dist = "t")
+
+Qt.res2 <- c(Qt1, Qt2, Qt3, Qt4)
+Qt.res2 <- data.frame(t(Qt.res2))
+
+
+
+Qt.resF <- rbind(Qt.res[c(2,4,6,8)], Qt.res2[c(2,4,6,8)])
+
+#xtable::xtable(Qt.resF, digits=2)
+
+###########################################################################
+# Risk Adjusted Forecasts Ratio (RAFR)
+###########################################################################
+
+# M1: Generate data from AR(1) with normal error
+set.seed(2021)
+D.t <- AR_sim(t = 1000, mean = 60, ar.coef=0.80, order = c(1, 0, 0), sd = 8, error = "norm") # AR(1)
+
+# M2: Generate data from AR(1) with t(3) error
+set.seed(2021)
+D.t1 <- AR_sim(t=1000, mean = 60, ar.coef = 0.80, order = c(1, 0, 0), error = "t", df=3) # AR(1)
+
+simdata <- data.frame(D.t, D.t1)
+###########################################################################
+res <- train_test(simdata[,1])
+
+min_sd <- res[[3]]$results
+#minMSE <- min_sd$SSE/250
+
+kk <- res[[3]]$demandForecast
+Mean <- res[[3]]$MeanDemand
+#sd <- min_sd[7]
+sd <- sqrt(min_sd$SSE/250) # length(test)=250
+
+# Sign correlation for demand
+y <- kk.opt <- data.frame(kk) # simulation number which gives optimal risk
+names(y) <- c("M1")
+
+# Sign correlation for residual
+# y <- data.frame(res[[3]]$error) # 0.80
+
+# Sign correlation
+rho.cal <- function(y) cor(y-mean(y), sign(y-mean(y)))
+rho <- apply(y, 2, rho.cal)
+rho 
+#0.80 
+
+
+RAFR1 <- Mean/(sd)
+RAFR2 <- Mean/(rho * sd)
+RAFR1; RAFR2
+## for t=1000
+RAFR1 <- y[nrow(y),]/(sd)
+RAFR2 <- y[nrow(y),]/(rho * sd)
+RAFR1; RAFR2
+
+###
+res <- train_test(simdata[,2])
+
+min_sd <- res[[3]]$results
+#minMSE <- min_sd$SSE/250
+
+kk <- res[[3]]$demandForecast
+Mean <- res[[3]]$MeanDemand
+#sd <- min_sd[7]
+sd <- sqrt(min_sd$SSE/250) # length(test)=250
+
+y <- kk.opt <- data.frame(kk) # simulation number which gives optimal risk
+names(y) <- c("M2")
+
+# Sign correlation for residual
+# y <- data.frame(res[[3]]$error) # 0.639852 and d.f = 3.02
+
+# for whole data:
+y <- data.frame(simdata[,1])
+
+y <- data.frame(simdata[,2])
+
+# Sign correlation
+rho.cal<-function(y) cor(y-mean(y), sign(y-mean(y)))
+rho <- apply(y, 2, rho.cal)
+rho 
+#0.749063  
+
+nu.fun <- function (x) rho*(x-1)*beta(x/2,1/2)-2*sqrt(x-2)
+nu <- uniroot(nu.fun, c(2, 15))$root
+
+RAFR1 <- Mean/(sd)
+RAFR2 <- Mean/(rho * sd)
+
+RAFR1; RAFR2
+
+## for t=1000
+RAFR1 <- y[nrow(y),]/(sd)
+RAFR2 <- y[nrow(y),]/(rho * sd)
+RAFR1; RAFR2
+
+# Dynamic RAF plots: Plot of RAF values
+
+restt <- sma_methodTestRFS(simdata[,1], L=5, method="DDsma", dist = "norm", alpha = 0.05)
+
+restt2 <- sma_methodTestRFS(simdata[,2], L=5, method="DDsma", dist = "t", alpha = 0.05)
+
+RAF.M1 <- restt[[2]]/restt[[3]]
+#mean(restt[[2]])/mean(restt[[3]])
+
+RAF.M2 <- restt2[[2]]/restt2[[3]]
+#mean(restt[[2]])/mean(restt[[3]])
+
+
+#pdf("RAFS_Plotsim.pdf", height=10, width=10) 
+par(mfrow=c(2,1))
+plot(RAF.M1, type="l", col="red", xlab="time",ylab="RAF values", main="RAF of DGP: M1 ", ylim=c(0,250))
+plot(RAF.M2, type="l", col="blue", xlab="time",ylab="RAF values", main="RAF of DGP: M2", ylim=c(0,250))
+#dev.off()
+
+plot(simdata[,1], type="l", col="red", xlab="time",ylab="RAF values", main="RAF of DGP: M1")
+plot(simdata[,2], type="l", col="blue", xlab="time",ylab="RAF values", main="RAF of DGP: M2")
+
+
+XX <- data.frame(RAF.M1,simdata[c(756:1000),1], RAF.M2, simdata[c(756:1000),2])
+
+#pdf("SMAplotPT1.pdf", height=6, width=10) 
+matplot(XX[,c(1:2)], type="l", lty=1, ylab = "units", lwd=2, xlab = "time", col = 2:5)
+abline(h=mean(simdata[c(756:1000),1])/sd(simdata[c(756:1000),1]), col="blue")
+
+matplot(XX[,c(3:4)], type="l", lty=1, ylab = "units", lwd=2, xlab = "time", col = 2:5)
+abline(h=mean(simdata[c(756:1000),2])/sd(simdata[c(756:1000),2]), col="blue")
+
+legend("topleft", lty=c(1, 1, 1,1), pch=c(1,1,1,1),
+       col=c("red", "green","blue","cyan"),legend=c("RAF1","d1","RAF2","d2"),
+       bty="n", y.intersp=1.1, cex=1.0)
+
+
+
+```
+
+

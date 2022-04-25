@@ -1,0 +1,807 @@
+---
+title: "SCPaper_DDWMA_Data_Applications"
+author: "Erfanul Hoque"
+#date: "Dec 15, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Machine learning approach
+
+To perform the optimization we will need
+
+- Generate demand process from AR(1) model
+
+- Calculate the lag demands for the time period
+
+- Assign random weights to the lag demands and then use those to build DDWMA demand forecast
+
+```{r, include=FALSE, echo=FALSE}
+# required packages
+require(timeSeries)
+require(tibble)
+require(dplyr) # to get lag values
+library(TTR) # tp use "SMA" function
+library(zoo) # to use "rollapply" function
+library(fGarch) # for student t distribution
+```
+
+
+```{r}
+# Call auxillary functions.
+source("aux_functions.R")
+
+```
+
+
+## Data Application: Example 1 (Bathroom Tissue)
+
+```{r}
+## Implementation of all functions
+
+######################################################################
+########## Read data Implementation #########
+# https://www.chicagobooth.edu/research/kilts/datasets/dominicks
+######################################################################
+# We use the publicly available Dominick?s Database published by the Kilts Center for Marketing, 
+# The University of Chicago Booth School for Business
+######################################################################
+# Data 1: Bathroom Tissue for STORE 112 (UPC 3828111217)
+######################################################################
+library(tibble)
+#Implementation for real data
+#source("AR_est.R")
+BathTissue_S112 <- read.csv("BathTissue_S112.csv")
+#head(BathTissue_S112)
+
+#Exploring data for missing observation
+setdiff(1:max(BathTissue_S112$WEEK), BathTissue_S112$WEEK) # find which weeks are missing
+#262 263 264 265 284 285 314 315 316 317 352 353 354 355
+
+# Add missing rows in data
+data2 <- BathTissue_S112[,c(1,3,4)]
+# Add the new rows in specific places
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 262:265, MOVE= 0, .before = 266)
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 284:285, MOVE= 0, .before = 286)
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 314:317, MOVE= 0, .before = 318)
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 352:355, MOVE= 0, .before = 356)
+# Replace missing values as "NA"
+sum(data2==0)
+data2[data2==0] <- NA 
+
+
+# Making data as time series data
+data.ts <- ts(data = data2[,3], start = 1, end = 399, frequency = 1,  deltat = 1/52)
+summary(data.ts)
+
+data.tsBT <- data.ts
+
+################################
+# Misisng value imputation
+################################
+#Quick code to replace missing values with the mean value
+#data.ts <- sapply(data.ts,function(x) ifelse(is.na(x),mean(x, na.rm = TRUE),x))
+
+library(imputeTS)
+
+# Mean imputation
+data.ts1 <- na_mean(data.ts)
+# Last Observartion Carried Forward (LOCF)
+# data.ts2 <- na_locf(data.ts)
+data.tsBT1 <- data.ts1
+summary(data.tsBT1)
+#saveRDS(data.tsBT1, file="dataBT.rds")
+
+#pdf("tsplotBT.pdf", height=6, width=10)
+#data.ts <- ts(data = data2[,3], start = c(1989,1), frequency = 52, deltat = 1/52)
+plot.ts(data.tsBT1, ylab = "units", xlab = "week", col="green", main="Store 112: Toilet Paper (UPC 3828111217)")
+#dev.off()
+
+# Centered data
+#data.ts1 <- data.ts - mean(data.ts)
+
+# Implement ML function
+D.t <- data.ts1 
+
+# Toilet paper data
+D.t <- readRDS(file = "dataBT.rds")
+
+#For forecast sum
+all_res <- ML_approach(data = D.t, L = 5, replication = 5000)
+
+
+# Obatain the optimal weight based on minimum variance
+Optm.res <- all_res$results # subtract the results to calculate the optimal weights
+min_sd <- Optm.res[which.min(Optm.res$SSE),]
+min_sd
+
+# Estimate the AR paramters using "arima" function
+#D.t1 <- data.ts1 
+par_est <- AR_est(data = D.t, order = c(1, 0, 0), include.mean = TRUE)
+Mu <- as.numeric(par_est$coef)[2]
+se.Mu <- as.numeric( sqrt(diag(par_est$var.coef))[2])
+phi.fit <- as.numeric(par_est$coef)[1] # AR parameter
+se.phi <- as.numeric(sqrt(diag(par_est$var.coef))[1])
+error.var <- par_est$sigma2
+phi.fit; se.phi; error.var
+# forecast error
+Onefore_naive <- phi.fit*D.t[length(data)]
+Onefore_naive
+SSE_ar <- sum(par_est$residuals[-1]^2)
+MSE_ar <- mean(par_est$residuals[-1]^2)
+MSE_ar
+
+# extract the arguments to implement the "q.t_minvar"" function
+L <- 5
+Optweights <- min_sd[1:L]
+Optweights
+Optlagvalues <- all_res$Lagvalues[length(D.t),]
+Optlagvalues
+minvar <- all_res$Risk[which.min(Optm.res$SSE)]^2
+phi.fit <- phi.fit
+minMSE <- min_sd$SSE/length(D.t)
+
+final_res <- q.t_minvar(data = D.t, phi = phi.fit, Optweights = Optweights, Optlagvalues = Optlagvalues, minvar = minvar, error.var = error.var, minMSE=minMSE, model = "AR1")
+final_res
+
+#xtable::xtable(final_res[c(1:2,4,6)], digits=2)
+
+# Risk Adjusted Forecasts Ratio (RAFR)
+#y <- data.frame(data.ts1)
+min_sd # to find the simulation numbers
+kk <- all_res$demandForecast
+Mean <- all_res$MeanDemand[which.min(Optm.res$SSE)]
+#sd <- min_sd[7]
+sd <- sqrt(min_sd$SSE/length(D.t))
+
+y <- kk.opt <- data.frame(kk[,which.min(Optm.res$SSE)]) # simulation number which gives optimal risk
+names(y) <- c("Toilet Paper")
+
+
+# Sign correlation
+y1 <- data.frame(all_res$error[,which.min(Optm.res$SSE)]) # 0.639852 and d.f = 3.02
+rho.cal<-function(y) cor(y-mean(y), sign(y-mean(y)))
+rho <- apply(y1, 2, rho.cal)
+rho 
+#0.73 
+
+
+RAFR1 <- Mean/(sd)
+RAFR2 <- Mean/(rho * sd)
+
+RAFR1; RAFR2
+
+
+## for t=1000
+RAFR1 <- y[nrow(y),]/(sd)
+RAFR2 <- y[nrow(y),]/(rho * sd)
+RAFR1; RAFR2
+
+#####################################################################
+##  Calculate order quantity and bullwhip effects (L= L+1)
+#####################################################################
+Qt_BW <- function(data, L = 5){
+D.t <- data
+all_res <- ML_approachQt(data = D.t, L = L+1, replication = 5000) # for Q_t calculation
+# Obatain the optimal weight based on minimum variance
+Optm.res <- all_res$results # subtract the results to calculate the optimal weights
+min_sd <- Optm.res[which.min(Optm.res$SSE),]
+min_sd
+
+# Estimate the AR paramters using "arima" function
+par_est <- AR_est(data = D.t, order = c(1, 0, 0), include.mean = TRUE)
+Mu <- as.numeric(par_est$coef)[2]
+phi.fit <- as.numeric(par_est$coef)[1] # AR parameter
+error.var <- par_est$sigma2
+
+# extract the arguments to implement the "q.t_minvar"" function
+L <- L + 1
+Optweights <- min_sd[1:L]
+Optlagvalues <- all_res$Lagvalues[length(D.t),]
+minvar <- all_res$Risk[which.min(Optm.res$SSE)]^2
+phi.fit <- phi.fit
+minMSE <- min_sd$SSE/length(D.t)
+
+Final_Qt <- q.t_minvar(data = D.t, phi = phi.fit, Optweights = Optweights, 
+                       Optlagvalues = Optlagvalues, minvar = minvar, error.var = error.var,
+                       minMSE=minMSE, model = "AR1")
+#Final_Qt
+## Calculate Bullwhip measure
+BW_ML <- bullwhip(phi = phi.fit, errorvar = error.var, minvar = minvar, minMSE=minMSE, 
+                  L= L, method = "ML")
+BW_TS <- bullwhip(phi = phi.fit, errorvar = error.var, minvar = minvar, minMSE=minMSE,
+                  L= L, method = "TS")
+BW_ML; BW_TS
+
+res <- list(Qt = Final_Qt[7:8], BW_ML = BW_ML, BW_TS = BW_TS)
+return(res)
+}
+
+QtBW <- Qt_BW(data = D.t, L=5)
+QtBW
+
+```
+
+
+
+## Data Application: Example 2 (Paper Towel)
+
+```{r}
+######################################################################
+# Data 2: Paper Towel for STORE 112 (UPC 3700063527)
+######################################################################
+library(tibble)
+#Implementation for real data
+#source("AR_est.R")
+# load the whole data
+#PaperTowel<- read.csv("wptw.csv")
+#head(PaperTowel)
+# Subset the data for Store 112 and UP 3700063527
+#PaperTowel_S112 <- subset(PaperTowel, STORE==112 & UPC==3700063527)
+
+# load the data
+PaperTowel_S112 <- read.csv("PaperTowel_S112.csv")
+#head(PaperTowel_S112)
+
+#Exploring data for missing observation
+setdiff(1:max(PaperTowel_S112$WEEK), PaperTowel_S112$WEEK) # find which weeks are missing
+#278 279 340 341 342 343 356 357 370 371
+
+# Add missing rows in data
+data2 <- PaperTowel_S112[,c(1,3,4)]
+head(data2)
+
+# Add the new rows in specific places
+library(tibble)
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 278:279, MOVE= 0, .before = 280)
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 340:343, MOVE= 0, .before = 344)
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 356:357, MOVE= 0, .before = 358)
+data2 <- data2 %>% add_row(STORE = 112, WEEK = 370:371, MOVE= 0, .before = 372)
+# Replace missing values as "NA"
+sum(data2==0)
+data2[data2==0] <- NA 
+
+# Making data as time series data
+data.ts <- ts(data = data2[,3], start = 1, end = 399, frequency = 1,  deltat = 1/52)
+summary(data.ts)
+
+data.tsPT <- data.ts
+
+################################
+# Misisng value imputation
+################################
+# Quick code to replace missing values with the mean value
+#data.ts <- sapply(data.ts,function(x) ifelse(is.na(x),mean(x, na.rm = TRUE),x))
+library(imputeTS)
+# Mean imputation
+data.ts1 <- na_mean(data.ts)
+summary(data.ts1)
+
+data.tsPT1 <- data.ts1
+
+##saveRDS(data.tsPT1, file="dataPT.rds")
+
+# Last Observartion Carried Forward (LOCF)
+#data.ts2 <- na_locf(data.ts)
+#summary(data.ts2)
+
+#pdf("tsplotPT.pdf", height=6, width=10) 
+#data.ts <- ts(data = data2[,3], start = c(1989,1), frequency = 52, deltat = 1/52)
+plot.ts(data.tsPT1, ylab = "units", xlab = "week", col="blue", main="Store 112: Paper Towel (UPC 3700063527)")
+#dev.off()
+
+# Implement ML function 
+D.t <- data.ts1 
+# Paper towel data
+#D.t  <- readRDS(file = "dataPT.rds")
+all_res <- ML_approach(data = D.t, L = 5, replication = 5000)
+
+# Obatain the optimal weight based on minimum variance
+Optm.res <- all_res$results # subtract the results to calculate the optimal weights
+min_sd <- Optm.res[which.min(Optm.res$SSE),]
+min_sd
+
+# Estimate the AR paramters using "arima" function
+par_est <- AR_est(data = D.t, order = c(1, 0, 0), include.mean = TRUE)
+Mu <- as.numeric(par_est$coef)[2]
+se.Mu <- as.numeric( sqrt(diag(par_est$var.coef))[2])
+phi.fit <- as.numeric(par_est$coef)[1] # AR parameter
+se.phi <- as.numeric(sqrt(diag(par_est$var.coef))[1])
+error.var <- par_est$sigma2
+phi.fit; se.phi; error.var
+
+# forecast error
+Onefore_naive <- phi.fit*D.t[length(data)]
+Onefore_naive
+SSE_ar <- sum(par_est$residuals[-1]^2)
+MSE_ar <- mean(par_est$residuals[-1]^2)
+MSE_ar
+
+# extract the arguments to implement the "q.t_minvar"" function
+L <- 5
+Optweights <- min_sd[1:L]
+Optweights
+Optlagvalues <- all_res$Lagvalues[length(D.t),]
+Optlagvalues
+minvar <- all_res$Risk[which.min(Optm.res$SSE)]^2
+phi.fit <- phi.fit
+minMSE <- min_sd$SSE/length(D.t)
+
+final_res <- q.t_minvar(data = D.t, phi = phi.fit, Optweights = Optweights, Optlagvalues = Optlagvalues, minvar = minvar, error.var = error.var, minMSE=minMSE, model = "AR1")
+final_res
+
+#xtable::xtable(final_res[c(1:2,4,6)], digits=2)
+
+# Risk Adjusted Forecasts Ratio (RAFR)
+#y <- data.frame(data.ts1)
+min_sd # to find the simulation numbers
+kk <- all_res$demandForecast
+Mean <- all_res$MeanDemand[which.min(Optm.res$SSE)]
+#sd <- min_sd[7]
+sd <- sqrt(min_sd$SSE/length(D.t))
+
+y <- kk.opt <- data.frame(kk[,which.min(Optm.res$SSE)]) # simulation number which gives optimal risk
+names(y) <- c("Paper Towel")
+
+
+# Sign correlation
+y1 <- data.frame(all_res$error[,which.min(Optm.res$SSE)]) # 
+acf(abs(y1))[2]
+
+#y1 <- data.frame(D.t) # 
+
+rho.cal<-function(y) cor(y-mean(y), sign(y-mean(y)))
+rho <- apply(y1, 2, rho.cal)
+rho 
+#0.73 
+
+# mean RAF
+RAFR1 <- Mean/(sd)
+RAFR2 <- Mean/(rho * sd)
+
+RAFR1; RAFR2
+
+
+## RAF for t (presented in paper)
+RAFR1 <- y[nrow(y),]/(sd)
+RAFR2 <- y[nrow(y),]/(rho * sd)
+RAFR1; RAFR2
+
+
+#####################################################################
+##  Calculate order quantity and bullwhip effects (L= L+1)
+#####################################################################
+Qt_BW <- function(data, L = 5){
+D.t <- data
+all_res <- ML_approachQt(data = D.t, L = L+1, replication = 5000) # for Q_t calculation
+# Obatain the optimal weight based on minimum variance
+Optm.res <- all_res$results # subtract the results to calculate the optimal weights
+min_sd <- Optm.res[which.min(Optm.res$SSE),]
+min_sd
+
+# Estimate the AR paramters using "arima" function
+par_est <- AR_est(data = D.t, order = c(1, 0, 0), include.mean = TRUE)
+Mu <- as.numeric(par_est$coef)[2]
+phi.fit <- as.numeric(par_est$coef)[1] # AR parameter
+error.var <- par_est$sigma2
+
+# extract the arguments to implement the "q.t_minvar"" function
+L <- L + 1
+Optweights <- min_sd[1:L]
+Optlagvalues <- all_res$Lagvalues[length(D.t),]
+minvar <- all_res$Risk[which.min(Optm.res$SSE)]^2
+phi.fit <- phi.fit
+minMSE <- min_sd$SSE/length(D.t)
+
+Final_Qt <- q.t_minvar(data = D.t, phi = phi.fit, Optweights = Optweights, 
+                       Optlagvalues = Optlagvalues, minvar = minvar, error.var = error.var,
+                       minMSE=minMSE, model = "AR1")
+#Final_Qt
+## Calculate Bullwhip measure
+BW_ML <- bullwhip(phi = phi.fit, errorvar = error.var, minvar = minvar, minMSE=minMSE, 
+                  L= L, method = "ML")
+BW_TS <- bullwhip(phi = phi.fit, errorvar = error.var, minvar = minvar, minMSE=minMSE,
+                  L= L, method = "TS")
+BW_ML; BW_TS
+
+res <- list(Qt = Final_Qt[7:8], BW_ML = BW_ML, BW_TS = BW_TS)
+return(res)
+}
+
+QtBW <- Qt_BW(data = D.t, L=5)
+QtBW
+
+
+
+# Plot the graph of Bullwhip effect
+LL = 10
+BW.res <- matrix(NA, LL, 2)
+for (i in 1:LL){
+BW <- Qt_BW(data = D.t, L = i)
+BW.res[i,] <- c(BW$BW_TS$BW[1], BW$BW_ML$BW[1])
+}
+colnames(BW.res) <- c("TS", "ML")
+BW.res
+
+BW1 <- BW.res
+
+BW2 <- BW.res
+
+
+# summary of bullwhip effects
+
+BW <- data.frame(BW1, BW2)
+xtable::xtable(BW[c(2,4)], digits=2)
+
+```
+
+
+```{r}
+############### rho hat & Summary Statistics & Correlation  #####################
+
+### With imputation
+y1=data.frame(data.tsBT1, data.tsPT1)
+Mean=apply(y1,2,mean)
+sd=apply(y1,2,sd)
+Min=apply(y1,2,min)
+Max=apply(y1,2,max)
+#Max=percent(apply(y1,2,max))
+ss1=data.frame(Mean,sd,Min,Max)
+
+kurt=kurtosis(y1)
+skew=skewness(y1)
+### rho estimates
+yabs = abs(y1 - apply(y1,2,mean))
+rho = apply(yabs,2,mean)/apply(y1,2,sd)
+#rho_percent= percent(rho);rho_percent
+#summarystat=data.frame(ss1,corr1,corr2,corr3,kurt,skew,rho_percent);summarystat
+summarystat=data.frame(ss1, kurtosis=t(kurt), skewness=t(skew),rho)
+summarystat
+# Making latex table
+library(xtable)
+xtable(summarystat)
+
+
+# Box plot of data
+y1=data.frame(data.tsBT1, data.tsPT1)
+boxplot(y1)
+
+library(reshape2)
+ymelt <- melt(y1)
+names(ymelt) <- c("products", "units")
+levels(ymelt$products) <- c("Toilet Paper","Paper Towel")
+
+
+library(ggplot2)
+
+#pdf("Boxplot33.pdf", height=6, width=10) 
+# Basic violin plot
+dp <- ggplot(ymelt, aes(x=products, y=units, fill=products)) + 
+  geom_violin(trim=FALSE)+
+  geom_boxplot(width=0.2, fill="white")+ #outlier.colour = NA
+  labs(x="products", y = "units") 
+dp + scale_fill_brewer(palette="Dark2") + theme_classic() + theme(text = element_text(size=15))
+dev.off()
+
+dp + scale_fill_brewer(palette="Blues") + theme_classic()
+# Discrete colors
+dp + scale_fill_brewer(palette="Dark2") + theme_classic()
+#dev.off()
+```
+
+# SMA and DDSMA approach and weighted volatility (DDWvol)
+```{r}
+# Implementation 
+data.tsBT1  <- readRDS(file = "dataBT.rds")
+# SMA
+alpha=0.05
+BT <- sma_method(data=data.tsBT1, L =5, method="sma", dist = "t", alpha = alpha)
+
+#pdf("SMAplotBT1.pdf", height=6, width=10) 
+matplot(BT[244:nrow(BT),c(1:4)], type="l", lty=1, ylab = "units", lwd=2, xlab = "week", col = 2:5,
+        main="Store 112: Toilet Paper")
+legend("topright", lty=c(1, 1, 1,1), pch=c(1,1,1,1),
+       col=c("red", "green","blue","cyan"),
+       legend=c("demand","SMA","lower bound","upper bound"),
+       bty="n", y.intersp=1.1, cex=1.0)
+#dev.off()
+
+#########################################################
+# DDWMA
+BT_ddsma <- sma_method(data=data.tsBT1, L =5, method="DDsma", dist = "t", alpha = 0.05)
+
+#pdf("DDSMAplotBT1.pdf", height=6, width=10) 
+matplot(BT_ddsma[244:nrow(BT_ddsma),c(1:2,5:6)], type="l", lty=1, ylab = "units", lwd=2, xlab = "week", col = 2:5, 
+        main="Store 112: Toilet Paper")
+legend("topright", lty=c(1, 1, 1,1), pch=c(1,1,1,1),
+       col=c("red", "green","blue","cyan"),
+       legend=c("demand","DDWMA","lower bound","upper bound"),
+       bty="n", y.intersp=1.1, cex=1.0)
+dev.off()
+
+#########################################################
+# Weighted volatility
+BT_DDWvol.res <- sma_methodnew (data=data.tsBT1, L=5, dist = "t", alpha = 0.05)
+BT_DDWvol <- BT_DDWvol.res[[1]]
+BT_weights <- BT_DDWvol.res[[2]]
+BT_weights 
+#pdf("DDWvolplotBT1.pdf", height=6, width=10) 
+matplot(BT_DDWvol[239:nrow(BT_DDWvol),c(1:4)], type="l", lty=1, ylab = "units", lwd=2, xlab = "week", col = 2:5, 
+        main="Store 112: Toilet Paper")
+legend("topright", lty=c(1, 1, 1,1), pch=c(1,1,1,1),
+       col=c("red", "green","blue","cyan"),
+       legend=c("demand","DDWMA","lower bound","upper bound"),
+       bty="n", y.intersp=1.1, cex=1.0)
+dev.off()
+
+
+######### Data 2 ############
+# Implementation 
+data.tsPT1  <- readRDS(file = "dataPT.rds")
+
+alpha=0.05
+PT <- sma_method(data = data.tsPT1, L =5, method="sma", dist = "t", alpha=0.05)
+
+#pdf("SMAplotPT1.pdf", height=6, width=10) 
+matplot(PT[244:nrow(PT),c(1:4)], type="l", lty=1, ylab = "units", lwd=2, xlab = "week", col = 2:5, 
+        main="Store 112: Paper Towel")
+legend("topleft", lty=c(1, 1, 1,1), pch=c(1,1,1,1),
+       col=c("red", "green","blue","cyan"),
+       legend=c("demand","SMA","lower bound","upper bound"),
+       bty="n", y.intersp=1.1, cex=1.0)
+#dev.off()
+
+
+#########################################################
+### DDWMA
+PT_ddsma <- sma_method(data=data.tsPT1, L =5, method="DDsma", dist = "t", alpha = 0.05)
+
+#pdf("DDSMAplotPT1.pdf", height=6, width=10) 
+matplot(PT_ddsma[244:nrow(PT_ddsma),c(1:2,5:6)], type="l", lty=1, ylab = "units", lwd=2, xlab = "week", col = 2:5, 
+        main="Store 112: Paper Towel")
+legend("topleft", lty=c(1, 1, 1,1), pch=c(1,1,1,1),
+       col=c("red", "green","blue","cyan"),
+       legend=c("demand","DDWMA","lower bound","upper bound"),
+       bty="n", y.intersp=1.1, cex=1.0)
+#dev.off()
+
+#########################################################
+# Weighted volatility
+PT_DDWvol.res <- sma_methodnew (data=data.tsPT1, L=5, dist = "t", alpha = 0.05)
+PT_DDWvol <- PT_DDWvol.res[[1]]
+PT_weights <- PT_DDWvol.res[[2]]
+PT_weights 
+#pdf("DDWvolplotPT1.pdf", height=6, width=10) 
+matplot(PT_DDWvol[239:nrow(PT_DDWvol),c(1:4)], type="l", lty=1, ylab = "units", lwd=2, xlab = "week", col = 2:5,
+        main="Store 112: Paper Towel")
+legend("topleft", lty=c(1, 1, 1,1), pch=c(1,1,1,1),
+       col=c("red", "green","blue","cyan"),
+       legend=c("demand","DDWMA","lower bound","upper bound"),
+       bty="n", y.intersp=1.1, cex=1.0)
+dev.off()
+
+
+##########################################################
+
+Qt_percentile <- function(alpha=0.05, data){
+# SMA
+PT <- sma_method(data = data, L=5, method="sma", dist = "t", alpha=alpha)
+# DDSMA
+PT_ddsma <- sma_method(data=data, L=5, method="DDsma", dist = "t", alpha = alpha)
+# Percentile order quantity
+Qt1 <- PT$BBU_SD[nrow(PT)] + PT$Demand[nrow(PT)]
+Qt2 <- PT_ddsma$BBU_signam[nrow(PT_ddsma)] + PT_ddsma$Demand[nrow(PT_ddsma)]
+return(c(Qt1, Qt2))
+}
+# Data 1
+Qt1 <- Qt_percentile(data.tsBT1, alpha = 0.1)
+Qt2 <- Qt_percentile(data.tsBT1, alpha = 0.05)
+Qt3 <- Qt_percentile(data.tsBT1, alpha = 0.02)
+Qt4 <- Qt_percentile(data.tsBT1, alpha = 0.005)
+
+Qt.res <- c(Qt1, Qt2, Qt3, Qt4)
+Qt.res <- data.frame(t(Qt.res))
+
+# Data 2
+Qt1 <- Qt_percentile(data.tsPT1, alpha = 0.1)
+Qt2 <- Qt_percentile(data.tsPT1, alpha = 0.05)
+Qt3 <- Qt_percentile(data.tsPT1, alpha = 0.02)
+Qt4 <- Qt_percentile(data.tsPT1, alpha = 0.005)
+
+Qt.res2 <- c(Qt1, Qt2, Qt3, Qt4)
+Qt.res2 <- data.frame(t(Qt.res2))
+
+Qt.resF <- rbind(Qt.res, Qt.res2)
+
+Qt.resF <- rbind(Qt.res[c(1,2,4,6,8)], Qt.res2[c(1,2,4,6,8)])
+Qt.resF
+#xtable::xtable(Qt.resF, digits=2)
+
+```
+
+# Dynamic RAF plots
+
+```{r}
+# RAF using weighted volatility forecast
+# Implementation 
+data.tsBT1  <- readRDS(file = "dataBT.rds")
+all_res <- sma_methodnew(data=data.tsBT1, L=5, dist = "t", alpha = 0.05)
+
+kk <- all_res[[1]]$DDWMA # optimal demand
+#sd <- sqrt(all_res[[2]][2,6]/length(data.tsBT1))
+sd <- all_res[[1]]$weighted_volatility
+
+y <- data.frame(kk) # simulation number which gives optimal risk
+
+# Sign correlation for residual
+y1 <- data.frame(all_res[[4]]$error.demand) 
+acf(abs(y1))[2]
+
+rho.cal<-function(y) cor(y-mean(y), sign(y-mean(y)))
+rho <- as.numeric(apply(y1, 2, rho.cal))
+rho 
+
+## RAF for t (presented in paper)
+RAFR1 <- y[nrow(y),]/(sd[nrow(y)])
+RAFR2 <- y[nrow(y),]/(rho * sd[nrow(y)])
+RAFR1; RAFR2
+
+######### Data 2 ############
+# Implementation 
+data.tsPT1  <- readRDS(file = "dataPT.rds")
+
+all_res <- sma_methodnew(data=data.tsPT1, L=5, dist = "t", alpha = 0.05)
+
+kk <- all_res[[1]]$DDWMA # optimal demand
+#sd <- sqrt(all_res[[2]][2,6]/length(data.tsBT1))
+sd <- all_res[[1]]$weighted_volatility
+
+y <- data.frame(kk) # simulation number which gives optimal risk
+
+# Sign correlation for residual
+y1 <- data.frame(all_res[[4]]$error.demand) 
+acf(abs(y1))[2]
+
+rho.cal<-function(y) cor(y-mean(y), sign(y-mean(y)))
+rho <- as.numeric(apply(y1, 2, rho.cal))
+rho 
+
+## RAF for t (presented in paper)
+RAFR1 <- y[nrow(y),]/(sd[nrow(y)])
+RAFR2 <- y[nrow(y),]/(rho * sd[nrow(y)])
+RAFR1; RAFR2
+
+
+# Dynamic plot
+# Weighted volatility
+# Data1
+BT_DDWvol.res <- sma_methodnew(data=data.tsBT1, L=5, dist = "t", alpha = 0.05)
+restt <- BT_DDWvol.res[[1]]
+
+# RAF = DDWMA/volatility
+RAFSBT <- restt[[2]]/restt[[5]]  # RAF = DDWMA/volatility
+mean(restt[[2]])/mean(restt[[5]])
+#2.39
+
+# Data2
+PT_DDWvol.res <- sma_methodnew(data=data.tsPT1, L=5, dist = "t", alpha = 0.05)
+restt2 <- PT_DDWvol.res[[1]]
+
+# RAF = DDWMA/volatility
+RAFSPT <- restt2[[2]]/restt2[[5]]  # RAF = DDWMA/volatility
+mean(restt2[[2]])/mean(restt2[[5]])
+#2.97
+ 
+
+#pdf("RAFS_Plotweighted.pdf", height=10, width=10) 
+par(mfrow=c(2,1))
+plot(RAFSBT[340:389], type="l", col="red", xlab="week",ylab="RAF values", main="RAF of Toilet Paper")
+plot(RAFSPT[340:389], type="l", col="blue", xlab="week",ylab="RAF values", main="RAF of Paper Towel")
+dev.off()
+
+
+
+### RAF using SMA and equal weight DDWMA
+## Plot of RAF values
+sma_method22 <- function(data, L = 5, method= c("sma","DDsma"), dist = c("norm", "t"), alpha=0.05){
+  
+  if(method == "sma"){
+  sma.values <- SMA(data, n=L)
+  ss <- sma.values
+  sd.sma <- rollapply(data, width = L, FUN = sd, by.column = TRUE, fill = NA, align = "right")
+  }else{
+  # DDSMA
+  all_res <- ML_approach(data = data, L = 5, replication = 5000)
+  sma.values <- all_res$demandForecast[,which.min(all_res$results$SSE)]
+  # sd estimate for DDSMA
+  ss <- c(rep(NA,L),sma.values)
+  sd.sma <- sapply((L+1):length(data), function(t) sqrt(sum((data[(t-L+1):t] - ss[t])^2) / (L-1)))
+  }
+  
+  #sapply(L:399, function(t) mean(Pt[(t-5+1):t]))
+  #Dt <- data[-c(1:L)]
+  #sapply(1:394, function(t) sqrt(sum((Dt[t:(t+5-1)] - sma.values[t])^2) / L-1))
+  
+  # Bolinger band using 2-sigma
+  bb.lower.sd <- sma.values - 2*sd.sma
+  bb.upper.sd <- sma.values + 2*sd.sma
+
+  #calculate residual of demand
+  #ss <- c(rep(NA,5), sma.values) 
+  res <- na.omit(data - ss)
+  # Sign correlation
+  rho.cal <- function(y) cor(y-mean(y), sign(y-mean(y)))
+  rho <- rho.cal(res)
+  
+  if(dist == "t"){
+  nu.fun <- function (x) rho*(x-1)*beta(x/2,1/2)-2*sqrt(x-2)
+  nu <- uniroot(nu.fun, c(2, 15))$root
+  }else {nu <- 4}
+  
+  if(method == "sma"){
+  #data driven volatility estimate (DDVE)
+  vol.cal <-function(y, rho){return(mean(abs(y-mean(y)))/rho)}
+  vol.sma <- rollapply(data, width = L, FUN = vol.cal, rho = rho, by.column = TRUE, fill = NA,
+                 align = "right")
+  }else{
+  # vol.sma  estimate for DDSMA
+  #ss <- c(rep(NA,5),sma.values)   
+  #vol.sma <- sapply((L+1):length(data), function(t) sum(abs(data[(t-5+1):t]- ss[t]))/rho)
+  vol.sma <- sapply((L+1):length(data), function(t) mean(abs(data[(t-5+1):t]- ss[t]))/rho)
+    }
+  
+  if(dist == "norm"){
+  bbt.lower.vol1 <- sma.values - qnorm((1 - (alpha/2)), mean = 0, sd = 1)*vol.sma
+  bbt.upper.vol1 <- sma.values + qnorm((1 - (alpha/2)), mean = 0, sd = 1)*vol.sma
+  } else{
+  bbt.lower.vol1 <- sma.values - qstd((1 - (alpha/2)), mean = 0, sd = 1, nu=nu)*vol.sma
+  bbt.upper.vol1 <- sma.values + qstd((1 - (alpha/2)), mean = 0, sd = 1, nu=nu)*vol.sma
+  }
+  
+  if (method == "sma"){
+  BB.res <- na.omit(as.data.frame(cbind(data[-c(1:L)], sma.values[-c(1:L)], bb.lower.sd[-c(1:L)], bb.upper.sd[-c(1:L)],
+                                        bbt.lower.vol1[-c(1:L)], bbt.upper.vol1[-c(1:L)])))
+  colnames(BB.res)<-c("Demand", "SMA", "BBL_SD", "BBU_SD","BBL_sigma", "BBU_signam")
+  }else{
+  BB.res <- na.omit(as.data.frame(cbind(data[-c(1:L)], sma.values, bb.lower.sd, bb.upper.sd,
+                                        bbt.lower.vol1, bbt.upper.vol1)))
+  colnames(BB.res)<-c("Demand", "DDSMA", "BBL_SD", "BBU_SD","BBL_sigma", "BBU_signam")
+  }
+  #colnames(BB.res)<-c("Demand", "SMA", "BBL_SD", "BBU_SD","BBL_sigma", "BBU_signam")
+  
+  return(list(BB.res, sma.values, vol.sma))
+}
+
+###########
+restt <- sma_method22(data=data.tsBT1, L=5, method="DDsma", dist = "t", alpha = 0.05)
+
+RAFSBT <- restt[[2]]/restt[[3]]
+
+mean(restt[[2]])/mean(restt[[3]])
+
+restt[[2]][length(restt[[2]])]/restt[[3]][length(restt[[2]])]
+#2.53
+restt[[2]][length(restt[[2]])]/(restt[[3]][length(restt[[2]])]*0.73)
+#3.47
+# data 2
+restt2 <- sma_method22(data=data.tsPT1, L=5, method="DDsma", dist = "t", alpha = 0.05)
+
+RAFSPT <- restt2[[2]]/restt2[[3]]
+
+mean(restt2[[2]])/mean(restt2[[3]])
+restt2[[2]][length(restt2[[2]])]/restt2[[3]][length(restt2[[2]])] 
+#3.98
+restt2[[2]][length(restt2[[2]])]/(restt2[[3]][length(restt2[[2]])] *0.58)
+# 6.86
+#pdf("RAFS_Plot100.pdf", height=10, width=10) 
+par(mfrow=c(2,1))
+plot(RAFSBT[340:394], type="l", col="red", xlab="week",ylab="RAF values", main="RAF of Toilet Paper sales")
+plot(RAFSPT[340:394], type="l", col="blue", xlab="week",ylab="RAF values", main="RAF of Paper Towel sales")
+#dev.off()
+
+```
+
+
+
